@@ -9,10 +9,76 @@ services:
     ports:
       - "8000:8000"
     restart: unless-stopped
-    
+    logging:
+      driver: fluentd
+      options:
+        fluentd-address: "127.0.0.1:24224"
+        tag: "docker.{{.Name}}"
+    depends_on:
+      fluentd:
+        condition: service_healthy
+
   rabbitmq:
     image: rabbitmq:3-management
     container_name: rabbitmq
     ports:
       - "5672:5672"   # AMQP protokolü (app buraya bağlanacak)
       - "15672:15672" # Web arayüz
+    logging:
+      driver: fluentd
+      options:
+        fluentd-address: "127.0.0.1:24224"
+        tag: "docker.{{.Name}}"
+    depends_on:
+      fluentd:
+        condition: service_healthy
+
+      
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.14.3
+    container_name: elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false      # dev için kapalı
+      - ES_JAVA_OPTS=-Xms1g -Xmx1g        # RAM limitini ihtiyaca göre ayarla
+    ports:
+      - "9200:9200"
+    volumes:
+      - es-data:/usr/share/elasticsearch/data
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    restart: unless-stopped
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.14.3
+    container_name: kibana
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    ports:
+      - "5601:5601"
+    depends_on:
+      - elasticsearch
+    restart: unless-stopped
+
+  fluentd:
+    build:
+      context: ./efk/fluentd
+    container_name: fluentd
+    command: ["fluentd","-c","/fluentd/etc/fluent.conf","-v"]
+    ports:
+      - "24224:24224/tcp"
+      - "24224:24224/udp"
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "24224"]
+      interval: 5s
+      timeout: 2s
+      retries: 20
+      start_period: 5s
+    depends_on:
+      - elasticsearch
+    restart: unless-stopped
+
+volumes:
+  es-data:

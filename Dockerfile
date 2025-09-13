@@ -18,6 +18,8 @@ WORKDIR /app
 # runtime için sadece openssl runtime lazım
 RUN apt-get update && apt-get install -y \
     libssl3 \
+    ca-certificates \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /app/target/release/rust-binance-api /app/rust-binance-api

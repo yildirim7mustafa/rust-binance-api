@@ -23,7 +23,6 @@ struct Ticker {
     price: String,
 }
 
-
 #[get("/coins")]
 async fn coins() -> Result<Json<Vec<Coin>>, Status> {
     match get_coins().await {
