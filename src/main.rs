@@ -2,6 +2,11 @@
 
 use rocket::serde::{Serialize, Deserialize, json::Json};
 use rocket::http::Status;
+use lapin::{options::*, types::FieldTable, BasicProperties, Connection, ConnectionProperties, message::Delivery};
+use futures_util::StreamExt;
+use tokio_amqp::*;
+use anyhow::Result;
+
 
 #[derive(Serialize)]
 #[serde(crate = "rocket::serde")]
@@ -17,38 +22,59 @@ struct Ticker {
     symbol: String,
     price: String,
 }
-/*
-#[get("/coins")]
-fn coins() -> Json<Vec<Coin>> {
-    Json(get_coins())
-}
-*/
+
 
 #[get("/coins")]
 async fn coins() -> Result<Json<Vec<Coin>>, Status> {
     match get_coins().await {
-        Ok(list) => Ok(Json(list)),
+        Ok(list) => {
+            // --- RabbitMQ producer ---
+            if let Err(e) = publish_to_queue(&list).await {
+                eprintln!("RabbitMQ publish error: {:?}", e);
+            }
+            Ok(Json(list))
+        }
         Err(_) => Err(Status::InternalServerError),
     }
 }
 
-/* 
-fn get_coins() -> Vec<Coin> {
-    let coin1 = Coin { name: "BTC".to_string(), price: 123.123 };
-    let coin2 = Coin { name: "UTC".to_string(), price: 5.55 };
-    vec![coin1, coin2]
-}
-*/
+async fn publish_to_queue(coins: &Vec<Coin>) -> Result<(), Box<dyn std::error::Error>> {
+    // broker adresi (compose’da "rabbitmq" servisi)
+    let addr = "amqp://guest:guest@rabbitmq:5672/%2f";
+    let conn = Connection::connect(addr, ConnectionProperties::default().with_tokio()).await?;
+    let channel = conn.create_channel().await?;
 
-async fn get_coins() -> Result<Vec<Coin>, Box<dyn std::error::Error>> {
+    channel
+        .queue_declare(
+            "coins_queue",
+            QueueDeclareOptions::default(),
+            FieldTable::default(),
+        )
+        .await?;
+
+    let payload = serde_json::to_vec(&coins)?;
+    channel
+        .basic_publish(
+            "",
+            "coins_queue",
+            BasicPublishOptions::default(),
+            &payload,
+            BasicProperties::default(),
+        )
+        .await?
+        .await?;
+
+    println!("Published {} coins to RabbitMQ!", coins.len());
+    Ok(())
+}
+
+async fn get_coins() -> Result<Vec<Coin>> {
     let url = "https://api.binance.com/api/v3/ticker/price";
     let resp = reqwest::get(url).await?.json::<Vec<Ticker>>().await?;
 
     let mut coins: Vec<Coin> = resp
         .into_iter()
-        // Sadece USDT paritelerini al (BTCUSDT, ETHUSDT, ...)
         .filter(|t| t.symbol.ends_with("USDT"))
-        // İstersen kaldıraçlı tokenleri atla (UP/DOWN)
         .filter(|t| !t.symbol.contains("UP") && !t.symbol.contains("DOWN"))
         .map(|t| {
             let name = t.symbol.trim_end_matches("USDT").to_string();
@@ -57,15 +83,65 @@ async fn get_coins() -> Result<Vec<Coin>, Box<dyn std::error::Error>> {
         })
         .collect();
 
-    // (Opsiyonel) İsme göre sırala
     coins.sort_by(|a, b| a.name.cmp(&b.name));
-
     Ok(coins)
 }
+async fn consume_queue() -> Result<(), Box<dyn std::error::Error>> {
+    let addr = "amqp://guest:guest@rabbitmq:5672/%2f";
+    let conn = Connection::connect(addr, ConnectionProperties::default().with_tokio()).await?;
+    let channel = conn.create_channel().await?;
 
-#[launch]
-fn rocket() -> _ {
-    rocket::build().mount("/", routes![coins])
-    // İstersen köke almak için:
-    // rocket::build().mount("/", routes![index, coins])
+    channel
+        .queue_declare(
+            "coins_queue",
+            QueueDeclareOptions::default(),
+            FieldTable::default(),
+        )
+        .await?;
+
+    let mut consumer = channel
+        .basic_consume(
+            "coins_queue",
+            "my_consumer",
+            BasicConsumeOptions::default(),
+            FieldTable::default(),
+        )
+        .await?;
+
+    tokio::spawn(async move {
+        while let Some(result) = consumer.next().await {
+            match result {
+                Ok(delivery) => handle_message(delivery).await,
+                Err(err) => eprintln!("Consumer error: {:?}", err),
+            }
+        }
+    });
+
+    Ok(())
+}
+
+async fn handle_message(delivery: Delivery) {
+    if let Ok(msg) = String::from_utf8(delivery.data.clone()) {
+        println!("Consumed message: {}", msg);
+    }
+    delivery.ack(BasicAckOptions::default()).await.expect("ack");
+}
+
+
+
+#[rocket::main]
+async fn main() -> Result<(), rocket::Error> {
+    // RabbitMQ consumer’ı arka planda başlat
+    rocket::tokio::spawn(async {
+        if let Err(e) = consume_queue().await {
+            eprintln!("Consumer init error: {e:?}");
+        }
+    });
+
+    rocket::build()
+        .mount("/", routes![coins])
+        .launch()
+        .await?;
+
+    Ok(())
 }

@@ -1,0 +1,18 @@
+services:
+  rust-binance-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      ROCKET_ADDRESS: "0.0.0.0"
+      ROCKET_PORT: "8000"
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+    
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: rabbitmq
+    ports:
+      - "5672:5672"   # AMQP protokolü (app buraya bağlanacak)
+      - "15672:15672" # Web arayüz
