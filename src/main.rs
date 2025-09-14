@@ -6,7 +6,24 @@ use lapin::{options::*, types::FieldTable, BasicProperties, Connection, Connecti
 use futures_util::StreamExt;
 use tokio_amqp::*;
 use anyhow::Result;
+use prometheus::{
+    Encoder, TextEncoder,
+    IntCounter, IntGauge, Histogram,
+    register_int_counter, register_int_gauge, register_histogram,
+};
+use lazy_static::lazy_static;
+use rocket::response::content::RawText;
 
+lazy_static! {
+    static ref HTTP_REQ_TOTAL: IntCounter =
+        register_int_counter!("http_requests_total", "Total HTTP requests").unwrap();
+    static ref HTTP_REQ_ERRORS: IntCounter =
+        register_int_counter!("http_requests_errors_total", "Total HTTP request errors").unwrap();
+    static ref COINS_COUNT: IntGauge =
+        register_int_gauge!("coins_last_count", "Number of coins in last response").unwrap();
+    static ref REQ_DURATION: Histogram =
+        register_histogram!("http_request_duration_seconds", "Request duration seconds").unwrap();
+}
 
 #[derive(Serialize)]
 #[serde(crate = "rocket::serde")]
@@ -23,6 +40,14 @@ struct Ticker {
     price: String,
 }
 
+#[get("/metrics")]
+fn metrics() -> RawText<String> {
+    let mut buf = Vec::new();
+    let enc = TextEncoder::new();
+    enc.encode(&prometheus::gather(), &mut buf).unwrap();
+    RawText(String::from_utf8(buf).unwrap())
+}
+/*
 #[get("/coins")]
 async fn coins() -> Result<Json<Vec<Coin>>, Status> {
     match get_coins().await {
@@ -36,7 +61,7 @@ async fn coins() -> Result<Json<Vec<Coin>>, Status> {
         Err(_) => Err(Status::InternalServerError),
     }
 }
-
+ */
 async fn publish_to_queue(coins: &Vec<Coin>) -> Result<(), Box<dyn std::error::Error>> {
     // broker adresi (compose’da "rabbitmq" servisi)
     let addr = "amqp://guest:guest@rabbitmq:5672/%2f";
@@ -85,6 +110,33 @@ async fn get_coins() -> Result<Vec<Coin>> {
     coins.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(coins)
 }
+
+#[get("/coins")]
+async fn coins() -> Result<Json<Vec<Coin>>, Status> {
+    let _timer = REQ_DURATION.start_timer(); // süre ölç
+    HTTP_REQ_TOTAL.inc();                    // istek sayacı
+
+    match get_coins().await {
+        Ok(list) => {
+            COINS_COUNT.set(list.len() as i64); // kaç coin döndük
+
+            // --- RabbitMQ producer (senin kodun) ---
+            if let Err(e) = publish_to_queue(&list).await {
+                // metrikte hata say
+                HTTP_REQ_ERRORS.inc();
+                eprintln!("RabbitMQ publish error: {:?}", e);
+                // İstersen burada 500 döndürmek yerine sadece log/metrikleyip devam edebiliriz.
+            }
+
+            Ok(Json(list))
+        }
+        Err(_) => {
+            HTTP_REQ_ERRORS.inc();
+            Err(Status::InternalServerError)
+        }
+    }
+}
+
 async fn consume_queue() -> Result<(), Box<dyn std::error::Error>> {
     let addr = "amqp://guest:guest@rabbitmq:5672/%2f";
     let conn = Connection::connect(addr, ConnectionProperties::default().with_tokio()).await?;
@@ -138,7 +190,7 @@ async fn main() -> Result<(), rocket::Error> {
     });
 
     rocket::build()
-        .mount("/", routes![coins])
+        .mount("/", routes![coins,metrics])
         .launch()
         .await?;
 
