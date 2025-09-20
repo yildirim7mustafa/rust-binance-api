@@ -14,6 +14,7 @@ use prometheus::{
 use lazy_static::lazy_static;
 use rocket::response::content::RawText;
 
+
 lazy_static! {
     static ref HTTP_REQ_TOTAL: IntCounter =
         register_int_counter!("http_requests_total", "Total HTTP requests").unwrap();
