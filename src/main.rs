@@ -47,21 +47,7 @@ fn metrics() -> RawText<String> {
     enc.encode(&prometheus::gather(), &mut buf).unwrap();
     RawText(String::from_utf8(buf).unwrap())
 }
-/*
-#[get("/coins")]
-async fn coins() -> Result<Json<Vec<Coin>>, Status> {
-    match get_coins().await {
-        Ok(list) => {
-            // --- RabbitMQ producer ---
-            if let Err(e) = publish_to_queue(&list).await {
-                eprintln!("RabbitMQ publish error: {:?}", e);
-            }
-            Ok(Json(list))
-        }
-        Err(_) => Err(Status::InternalServerError),
-    }
-}
- */
+
 async fn publish_to_queue(coins: &Vec<Coin>) -> Result<(), Box<dyn std::error::Error>> {
     // broker adresi (compose’da "rabbitmq" servisi)
     let addr = "amqp://guest:guest@rabbitmq:5672/%2f";

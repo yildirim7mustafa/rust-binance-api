@@ -10,13 +10,11 @@ services:
       - "8000:8000"
     restart: unless-stopped
     logging:
-      driver: fluentd
+      driver: gelf
       options:
-        fluentd-address: "127.0.0.1:24224"
-        tag: "docker.{{.Name}}"
-    depends_on:
-      fluentd:
-        condition: service_healthy
+        gelf-address: "udp://127.0.0.1:12201"
+        tag: "rust-binance-api"
+
 
   rabbitmq:
     image: rabbitmq:3-management
@@ -25,13 +23,10 @@ services:
       - "5672:5672"   # AMQP protokolü (app buraya bağlanacak)
       - "15672:15672" # Web arayüz
     logging:
-      driver: fluentd
+      driver: gelf
       options:
-        fluentd-address: "127.0.0.1:24224"
-        tag: "docker.{{.Name}}"
-    depends_on:
-      fluentd:
-        condition: service_healthy
+        gelf-address: "udp://127.0.0.1:12201"
+        tag: "rabbitmq"
 
       
   elasticsearch:
@@ -62,20 +57,16 @@ services:
       - elasticsearch
     restart: unless-stopped
 
-  fluentd:
-    build:
-      context: ./efk/fluentd
-    container_name: fluentd
-    command: ["fluentd","-c","/fluentd/etc/fluent.conf","-v"]
+
+  logstash:
+    image: docker.elastic.co/logstash/logstash:8.14.3
+    container_name: logstash
     ports:
-      - "24224:24224/tcp"
-      - "24224:24224/udp"
-    healthcheck:
-      test: ["CMD", "nc", "-z", "127.0.0.1", "24224"]
-      interval: 5s
-      timeout: 2s
-      retries: 20
-      start_period: 5s
+      - "12201:12201/udp"   # GELF UDP
+    environment:
+      - LS_JAVA_OPTS=-Xms256m -Xmx256m
+    volumes:
+      - ./elk/logstash/pipeline:/usr/share/logstash/pipeline:ro
     depends_on:
       - elasticsearch
     restart: unless-stopped
